@@ -2,6 +2,7 @@
 
 set -u
 
+# --- ОСНОВНАЯ КОНФИГУРАЦИЯ ---
 APP_NAME="gotelegram"
 APP_PATH="/usr/local/bin/gotelegram"
 CONFIG_DIR="/etc/gotelegram"
@@ -9,23 +10,27 @@ CONFIG_FILE="${CONFIG_DIR}/mtproxy.env"
 CONTAINER_NAME="mtproto-proxy"
 IMAGE_NAME="nineseconds/mtg:2"
 
+# --- ЦВЕТА ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+MAGENTA='\033[0;35m'
+BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 print_ok()   { echo -e "${GREEN}●${NC} $1"; }
 print_bad()  { echo -e "${RED}●${NC} $1"; }
 print_warn() { echo -e "${YELLOW}●${NC} $1"; }
 print_info() { echo -e "${CYAN}$1${NC}"; }
 print_line() { echo -e "${BLUE}============================================================${NC}"; }
 
+# --- СИСТЕМНЫЕ ПРОВЕРКИ ---
 check_root() {
-    if [ "${EUID}" -ne 0 ]; then
-        echo -e "${RED}Ошибка: запусти скрипт от root.${NC}"
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Ошибка: запустите скрипт от root.${NC}"
         exit 1
     fi
 }
@@ -45,6 +50,40 @@ install_self() {
     fi
 }
 
+ensure_docker() {
+    if ! command_exists docker; then
+        echo -e "${RED}Docker не найден.${NC}"
+        echo -e "${YELLOW}Установите Docker отдельно и запустите скрипт снова.${NC}"
+        exit 1
+    fi
+
+    if ! systemctl is-active --quiet docker; then
+        echo -e "${YELLOW}Docker установлен, но сервис не запущен. Пытаюсь запустить...${NC}"
+        systemctl enable --now docker >/dev/null 2>&1 || true
+    fi
+
+    if ! systemctl is-active --quiet docker; then
+        echo -e "${RED}Сервис Docker не запущен.${NC}"
+        exit 1
+    fi
+}
+
+ensure_qrencode() {
+    if ! command_exists qrencode; then
+        echo -e "${YELLOW}Пакет qrencode не найден. Устанавливаю...${NC}"
+        if command_exists apt-get; then
+            apt-get update && apt-get install -y qrencode
+        elif command_exists dnf; then
+            dnf install -y qrencode
+        elif command_exists yum; then
+            yum install -y qrencode
+        else
+            echo -e "${YELLOW}Не удалось автоматически установить qrencode. Продолжаю без QR.${NC}"
+        fi
+    fi
+}
+
+# --- РАБОТА С КОНФИГОМ ---
 load_config() {
     if [ -f "${CONFIG_FILE}" ]; then
         # shellcheck disable=SC1090
@@ -65,65 +104,18 @@ EOF
     chmod 600 "${CONFIG_FILE}"
 }
 
-get_public_ip() {
+# --- СЕТЕВЫЕ ФУНКЦИИ ---
+get_ip() {
     local ip
-    ip="$(curl -4 -s --max-time 4 https://api.ipify.org 2>/dev/null || true)"
+    ip="$(curl -s -4 --max-time 5 https://api.ipify.org 2>/dev/null || true)"
     if [ -z "${ip}" ]; then
-        ip="$(curl -4 -s --max-time 4 https://ifconfig.io 2>/dev/null || true)"
-    fi
-    if [ -z "${ip}" ]; then
-        ip="$(curl -4 -s --max-time 4 https://icanhazip.com 2>/dev/null || true)"
+        ip="$(curl -s -4 --max-time 5 https://icanhazip.com 2>/dev/null || true)"
     fi
     if [ -z "${ip}" ]; then
-        echo "unknown"
-    else
-        echo "${ip}" | tr -d '[:space:]'
-    fi
-}
-
-ensure_docker() {
-    if ! command_exists docker; then
-        echo -e "${RED}Docker не найден.${NC}"
-        echo "Установи Docker отдельно и запусти скрипт снова."
-        exit 1
+        ip="$(curl -s -4 --max-time 5 https://ifconfig.io 2>/dev/null || true)"
     fi
 
-    if ! systemctl is-active --quiet docker; then
-        echo -e "${YELLOW}Docker установлен, но сервис не запущен. Пытаюсь запустить...${NC}"
-        systemctl enable --now docker >/dev/null 2>&1 || true
-    fi
-
-    if ! systemctl is-active --quiet docker; then
-        echo -e "${RED}Сервис Docker не запущен.${NC}"
-        exit 1
-    fi
-}
-
-ensure_qrencode() {
-    if ! command_exists qrencode; then
-        echo -e "${YELLOW}Пакет qrencode не найден. Ставлю...${NC}"
-        if command_exists apt-get; then
-            apt-get update && apt-get install -y qrencode
-        elif command_exists dnf; then
-            dnf install -y qrencode
-        elif command_exists yum; then
-            yum install -y qrencode
-        else
-            echo -e "${YELLOW}Не удалось автоматически установить qrencode. Продолжаю без QR.${NC}"
-        fi
-    fi
-}
-
-container_exists() {
-    docker ps -a --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"
-}
-
-container_running() {
-    docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"
-}
-
-get_container_port() {
-    docker inspect "${CONTAINER_NAME}" --format='{{range $p, $conf := .HostConfig.PortBindings}}{{(index $conf 0).HostPort}}{{end}}' 2>/dev/null | head -n1
+    echo "${ip}" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1
 }
 
 port_is_busy() {
@@ -142,12 +134,35 @@ validate_port() {
     [ "${port}" -ge 1 ] && [ "${port}" -le 65535 ]
 }
 
+port_status_label() {
+    local port="$1"
+    if port_is_busy "${port}"; then
+        echo -e "${RED}занят${NC}"
+    else
+        echo -e "${GREEN}свободен${NC}"
+    fi
+}
+
+# --- DOCKER / CONTAINER ---
+container_exists() {
+    docker ps -a --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"
+}
+
+container_running() {
+    docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"
+}
+
+get_container_port() {
+    docker inspect "${CONTAINER_NAME}" --format='{{range $p, $conf := .HostConfig.PortBindings}}{{(index $conf 0).HostPort}}{{end}}' 2>/dev/null | head -n1
+}
+
 generate_secret() {
     local domain="$1"
     docker pull "${IMAGE_NAME}" >/dev/null
     docker run --rm "${IMAGE_NAME}" generate-secret --hex "${domain}"
 }
 
+# --- QR / ССЫЛКИ ---
 show_qr() {
     local text="$1"
     if command_exists qrencode; then
@@ -157,16 +172,16 @@ show_qr() {
     fi
 }
 
-show_connection_data() {
+show_config() {
     load_config
 
     if ! container_exists; then
-        echo -e "${RED}MTProxy контейнер не найден.${NC}"
-        return 1
+        echo -e "${RED}Прокси не найден!${NC}"
+        return
     fi
 
     local ip port link
-    ip="$(get_public_ip)"
+    ip="$(get_ip)"
     port="${PORT}"
 
     if [ -z "${port}" ]; then
@@ -175,35 +190,31 @@ show_connection_data() {
 
     if [ -z "${SECRET}" ] || [ -z "${port}" ]; then
         echo -e "${RED}Не удалось прочитать параметры подключения.${NC}"
-        return 1
+        return
     fi
 
     link="tg://proxy?server=${ip}&port=${port}&secret=${SECRET}"
 
-    print_line
-    echo -e "${WHITE}MTProxy connection data${NC}"
-    print_line
-    echo -e "Server: ${ip}"
-    echo -e "Port:   ${port}"
-    echo -e "Domain: ${DOMAIN:-unknown}"
+    echo -e "\n${GREEN}=== ПАНЕЛЬ ДАННЫХ ===${NC}"
+    echo -e "IP: ${ip} | Port: ${port}"
+    echo -e "Domain: ${DOMAIN}"
     echo -e "Secret: ${SECRET}"
-    echo -e "Link:   ${CYAN}${link}${NC}"
-    print_line
+    echo -e "Link: ${BLUE}${link}${NC}"
     show_qr "${link}"
-    print_line
 }
 
+# --- СТАТУС ---
 show_status() {
     load_config
 
     local public_ip
-    public_ip="$(get_public_ip)"
+    public_ip="$(get_ip)"
 
     print_line
-    echo -e "${WHITE}MTProxy status${NC}"
+    echo -e "${WHITE}GoTelegram MTProxy Status${NC}"
     print_line
     echo -e "Host:      $(hostname -f 2>/dev/null || hostname)"
-    echo -e "Public IP: ${public_ip}"
+    echo -e "Public IP: ${public_ip:-unknown}"
     echo -e "Domain:    ${DOMAIN:-not set}"
     echo -e "Port:      ${PORT:-not set}"
     print_line
@@ -246,50 +257,45 @@ show_status() {
         print_warn "Domain not saved in config"
     fi
 
-    if [ -n "${PORT:-}" ]; then
-        if timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/${PORT}" 2>/dev/null; then
-            print_ok "TCP connect to 127.0.0.1:${PORT}"
-        else
-            print_bad "TCP connect to 127.0.0.1:${PORT}"
-        fi
-    fi
-
     print_line
 }
 
-remove_proxy() {
-    if container_exists; then
-        docker stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-        docker rm "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-        print_ok "Контейнер ${CONTAINER_NAME} удалён"
-    else
-        print_warn "Контейнер ${CONTAINER_NAME} не найден"
-    fi
-}
-
+# --- ВЫБОР ДОМЕНА ---
 choose_domain() {
     local domains domain_choice custom_domain
+
+    echo -e "${CYAN}--- Выберите домен для маскировки (Fake TLS) ---${NC}"
+
     domains=(
         "google.com"
         "wikipedia.org"
+        "habr.com"
         "github.com"
-        "stackoverflow.com"
+        "coursera.org"
+        "udemy.com"
+        "medium.com"
         "bbc.com"
+        "cnn.com"
         "reuters.com"
-        "cloudflare.com"
-        "microsoft.com"
-        "apple.com"
-        "amazon.com"
+        "nytimes.com"
+        "lenta.ru"
+        "rbc.ru"
+        "ria.ru"
+        "kommersant.ru"
+        "stepik.org"
+        "duolingo.com"
+        "khanacademy.org"
+        "ted.com"
+        "max.ru"
     )
 
-    echo -e "${CYAN}Выбери домен-маскировку:${NC}"
-    local i=1
-    for d in "${domains[@]}"; do
-        printf "%2d) %s\n" "${i}" "${d}"
-        i=$((i+1))
+    for i in "${!domains[@]}"; do
+        printf "${YELLOW}%2d)${NC} %-20s " "$((i+1))" "${domains[$i]}"
+        [[ $(( (i+1) % 2 )) -eq 0 ]] && echo ""
     done
-    echo "11) Ввести свой домен"
-    read -r -p "Выбор [1-11]: " domain_choice
+    echo ""
+
+    read -r -p "Ваш выбор [1-20]: " domain_choice
 
     case "${domain_choice}" in
         1) DOMAIN="${domains[0]}" ;;
@@ -302,163 +308,175 @@ choose_domain() {
         8) DOMAIN="${domains[7]}" ;;
         9) DOMAIN="${domains[8]}" ;;
         10) DOMAIN="${domains[9]}" ;;
-        11)
-            read -r -p "Введи свой домен-маскировку: " custom_domain
-            DOMAIN="${custom_domain}"
-            ;;
+        11) DOMAIN="${domains[10]}" ;;
+        12) DOMAIN="${domains[11]}" ;;
+        13) DOMAIN="${domains[12]}" ;;
+        14) DOMAIN="${domains[13]}" ;;
+        15) DOMAIN="${domains[14]}" ;;
+        16) DOMAIN="${domains[15]}" ;;
+        17) DOMAIN="${domains[16]}" ;;
+        18) DOMAIN="${domains[17]}" ;;
+        19) DOMAIN="${domains[18]}" ;;
+        20) DOMAIN="${domains[19]}" ;;
         *)
             DOMAIN="google.com"
             ;;
     esac
 }
 
+# --- ВЫБОР ПОРТА С ПРОВЕРКОЙ ---
 choose_port() {
-    local answer
-    echo -e "${CYAN}Выбери порт:${NC}"
-    echo "1) 8443 (рекомендуется)"
-    echo "2) 443  (только если точно свободен)"
-    echo "3) Ввести свой порт"
-    read -r -p "Выбор [1-3]: " answer
+    local p_choice custom_port
 
-    case "${answer}" in
-        1) PORT="8443" ;;
-        2) PORT="443" ;;
-        3)
-            read -r -p "Введи порт: " PORT
-            ;;
-        *)
-            PORT="8443"
-            ;;
-    esac
+    while true; do
+        clear
+        echo -e "${CYAN}--- Выберите порт ---${NC}"
+        echo -e "1) 8443 ($(port_status_label 8443))"
+        echo -e "2) 443  ($(port_status_label 443))"
+        echo -e "3) Проверить и выбрать другой порт"
+        read -r -p "Выбор: " p_choice
 
-    if ! validate_port "${PORT}"; then
-        echo -e "${RED}Некорректный порт.${NC}"
-        return 1
-    fi
+        case "${p_choice}" in
+            1)
+                PORT=8443
+                if port_is_busy "${PORT}"; then
+                    echo -e "${RED}Порт ${PORT} уже занят.${NC}"
+                    port_owner "${PORT}"
+                    read -r -p "Нажмите Enter..."
+                    continue
+                fi
+                return 0
+                ;;
+            2)
+                PORT=443
+                if port_is_busy "${PORT}"; then
+                    echo -e "${RED}Порт ${PORT} уже занят.${NC}"
+                    port_owner "${PORT}"
+                    read -r -p "Нажмите Enter..."
+                    continue
+                fi
+                return 0
+                ;;
+            3)
+                read -r -p "Введите свой порт: " custom_port
 
-    return 0
+                if ! validate_port "${custom_port}"; then
+                    echo -e "${RED}Некорректный порт.${NC}"
+                    read -r -p "Нажмите Enter..."
+                    continue
+                fi
+
+                if port_is_busy "${custom_port}"; then
+                    echo -e "${RED}Порт ${custom_port} уже занят.${NC}"
+                    port_owner "${custom_port}"
+                    read -r -p "Нажмите Enter..."
+                    continue
+                fi
+
+                PORT="${custom_port}"
+                return 0
+                ;;
+            *)
+                echo -e "${RED}Неверный ввод.${NC}"
+                read -r -p "Нажмите Enter..."
+                ;;
+        esac
+    done
 }
 
-install_or_update_proxy() {
-    load_config
+# --- УСТАНОВКА / ОБНОВЛЕНИЕ ---
+menu_install() {
+    clear
     choose_domain
-    choose_port || return 1
+    echo ""
+    choose_port
 
-    if [ "${PORT}" = "443" ]; then
-        echo -e "${YELLOW}Внимание: 443 часто уже занят боевыми сервисами.${NC}"
-        read -r -p "Точно продолжить с портом 443? [y/N]: " confirm443
-        if [[ ! "${confirm443}" =~ ^[Yy]$ ]]; then
-            echo "Отменено."
-            return 1
-        fi
-    fi
-
-    if port_is_busy "${PORT}"; then
-        if container_running; then
-            local current_port
-            current_port="$(get_container_port)"
-            if [ "${current_port}" = "${PORT}" ]; then
-                print_warn "Порт ${PORT} уже занят текущим контейнером ${CONTAINER_NAME}, обновлю его."
-            else
-                print_bad "Порт ${PORT} уже занят."
-                port_owner "${PORT}"
-                return 1
-            fi
-        else
-            print_bad "Порт ${PORT} уже занят."
-            port_owner "${PORT}"
-            return 1
-        fi
-    fi
-
-    print_info "Тяну образ ${IMAGE_NAME}..."
-    docker pull "${IMAGE_NAME}" || {
-        print_bad "Не удалось скачать Docker image"
-        return 1
-    }
-
-    print_info "Генерирую secret для домена ${DOMAIN}..."
+    echo -e "${YELLOW}[*] Настройка прокси...${NC}"
     SECRET="$(generate_secret "${DOMAIN}")"
+
     if [ -z "${SECRET}" ]; then
-        print_bad "Не удалось сгенерировать secret"
+        echo -e "${RED}Не удалось сгенерировать secret.${NC}"
         return 1
     fi
 
-    if container_exists; then
-        print_warn "Останавливаю старый контейнер ${CONTAINER_NAME}..."
-        docker stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-        docker rm "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-    fi
+    docker stop "${CONTAINER_NAME}" &>/dev/null || true
+    docker rm "${CONTAINER_NAME}" &>/dev/null || true
 
-    print_info "Запускаю MTProxy на порту ${PORT}..."
     docker run -d \
         --name "${CONTAINER_NAME}" \
         --restart unless-stopped \
         -p "0.0.0.0:${PORT}:${PORT}/tcp" \
         "${IMAGE_NAME}" \
-        simple-run -n 1.1.1.1 -i prefer-ipv4 "0.0.0.0:${PORT}" "${SECRET}" >/dev/null || {
-        print_bad "Не удалось запустить контейнер"
+        simple-run -n 1.1.1.1 -i prefer-ipv4 "0.0.0.0:${PORT}" "${SECRET}" >/dev/null
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Не удалось запустить контейнер.${NC}"
         return 1
-    }
+    fi
 
     save_config
 
-    echo
-    print_ok "MTProxy запущен"
-    show_connection_data
+    clear
+    show_config
+    read -r -p "Установка завершена. Нажмите Enter..."
 }
 
-show_menu() {
-    echo
-    print_line
-    echo -e "${WHITE}GoTelegram MTProxy Manager${NC}"
-    print_line
-    echo "1) Установить / обновить MTProxy"
-    echo "2) Показать данные подключения"
-    echo "3) Показать статус"
-    echo "4) Проверить, занят ли порт"
-    echo "5) Удалить MTProxy"
-    echo "0) Выход"
-    print_line
+# --- УДАЛЕНИЕ ---
+remove_proxy() {
+    docker stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    docker rm "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    echo -e "${GREEN}Прокси удалён.${NC}"
 }
 
+# --- РУЧНАЯ ПРОВЕРКА ПОРТА ---
 check_custom_port() {
-    local p
-    read -r -p "Введи порт для проверки: " p
-    if ! validate_port "${p}"; then
-        print_bad "Некорректный порт"
+    local port_to_check
+
+    read -r -p "Введите порт для проверки: " port_to_check
+
+    if ! validate_port "${port_to_check}"; then
+        echo -e "${RED}Некорректный порт.${NC}"
         return 1
     fi
 
-    if port_is_busy "${p}"; then
-        print_bad "Порт ${p} занят"
-        port_owner "${p}"
+    if port_is_busy "${port_to_check}"; then
+        echo -e "${RED}Порт ${port_to_check} занят.${NC}"
+        port_owner "${port_to_check}"
     else
-        print_ok "Порт ${p} свободен"
+        echo -e "${GREEN}Порт ${port_to_check} свободен.${NC}"
     fi
 }
 
-main() {
-    check_root
-    ensure_dirs
-    install_self
-    ensure_docker
-    ensure_qrencode
-    load_config
-
+# --- ОСНОВНОЕ МЕНЮ ---
+main_menu() {
     while true; do
-        show_menu
-        read -r -p "Пункт: " menu_choice
-        case "${menu_choice}" in
-            1) install_or_update_proxy ;;
-            2) show_connection_data ;;
-            3) show_status ;;
-            4) check_custom_port ;;
-            5) remove_proxy ;;
+        clear
+        echo -e "\n${MAGENTA}=== GoTelegram Manager ===${NC}"
+        echo -e "1) ${GREEN}Установить / Обновить прокси${NC}"
+        echo -e "2) Показать данные подключения"
+        echo -e "3) Показать статус"
+        echo -e "4) Проверить порт"
+        echo -e "5) ${RED}Удалить прокси${NC}"
+        echo -e "0) Выход"
+        read -r -p "Пункт: " m_idx
+
+        case "${m_idx}" in
+            1) menu_install ;;
+            2) clear; show_config; read -r -p "Нажмите Enter..." ;;
+            3) clear; show_status; read -r -p "Нажмите Enter..." ;;
+            4) clear; check_custom_port; read -r -p "Нажмите Enter..." ;;
+            5) clear; remove_proxy; read -r -p "Нажмите Enter..." ;;
             0) exit 0 ;;
-            *) echo "Неверный ввод" ;;
+            *) echo "Неверный ввод"; sleep 1 ;;
         esac
     done
 }
 
-main
+# --- СТАРТ СКРИПТА ---
+check_root
+ensure_dirs
+install_self
+ensure_docker
+ensure_qrencode
+load_config
+main_menu
