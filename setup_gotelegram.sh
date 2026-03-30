@@ -3,8 +3,6 @@
 # --- КОНФИГУРАЦИЯ ---
 ALIAS_NAME="gotelegram"
 BINARY_PATH="/usr/local/bin/gotelegram"
-TIP_LINK="https://pay.cloudtips.ru/p/7410814f"
-PROMO_LINK="https://vk.cc/ct29NQ"
 
 # --- ЦВЕТА ---
 RED='\033[0;31m'
@@ -36,25 +34,6 @@ get_ip() {
     local ip
     ip=$(curl -s -4 --max-time 5 https://api.ipify.org || curl -s -4 --max-time 5 https://icanhazip.com || echo "0.0.0.0")
     echo "$ip" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1
-}
-
-# --- 1) ПРОМО ПРИ ЗАПУСКЕ ---
-show_promo() {
-    clear
-    echo -e "${MAGENTA}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${MAGENTA}║          ХОСТИНГ СО СКИДКОЙ ДО -60% ОТ ANTEN-KA              ║${NC}"
-    echo -e "${MAGENTA}╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo -e "${CYAN}  >>> Ссылка: $PROMO_LINK ${NC}"
-    echo -e "\n${MAGENTA}❖ •••••••••••••••••• АКТУАЛЬНЫЕ ПРОМОКОДЫ •••••••••••••••••• ❖${NC}"
-    printf "  ${YELLOW}%-12s${NC} : ${WHITE}%s${NC}\n" "OFF60" "Скидка 60% на ПЕРВЫЙ МЕСЯЦ"
-    printf "  ${YELLOW}%-12s${NC} : ${WHITE}%s${NC}\n" "antenka20" "Буст 20% + 3% (оплата за 3 МЕС)"
-    printf "  ${YELLOW}%-12s${NC} : ${WHITE}%s${NC}\n" "antenka6" "Буст 15% + 5% (оплата за 6 МЕС)"
-    printf "  ${YELLOW}%-12s${NC} : ${WHITE}%s${NC}\n" "antenka12" "Буст 5% + 5% (оплата за 12 МЕС)"
-    echo -e "${MAGENTA}❖ •••••••••••••••••••••••••••••••••••••••••••••••••••••••••• ❖${NC}"
-    qrencode -t ANSIUTF8 "$PROMO_LINK"
-    echo -e "${GREEN}Сканируйте QR для перехода на хостинг${NC}"
-    echo -e "------------------------------------------------------"
-    read -p "Нажмите [ENTER], чтобы войти в меню управления..."
 }
 
 # --- ПАНЕЛЬ ДАННЫХ ---
